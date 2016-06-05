@@ -2,7 +2,7 @@ var N3 = require('n3'),
     request = require('request'),
 	urlparse = require('url-parse');
 
-var SAMPLING_FACTOR = 0.5;
+var SAMPLING_FACTOR = 0.05;
 
 /**
  * Gets the details about the biggest datasets that are available on the laundromat.
@@ -19,9 +19,9 @@ function getRelevantDatasets() {
         llo:url ?doc;\
         llo:md5 ?md5.\
     FILTER(?triples > 0)\
-    FILTER(?triples < 1000)\
+    FILTER(?triples < 1000000)\
     } ORDER BY DESC(?triples)\
-    LIMIT 10';
+    LIMIT 1';
 
     var requestParams = {
         url: laundromatURL,
@@ -40,7 +40,7 @@ function getRelevantDatasets() {
                     return {
                         ldfEndpoint: 'http://ldf.lodlaundromat.org/' + elem.md5.value,
                         source: elem.doc.value,
-                        triples: elem.triples.value
+                        triples: parseInt(elem.triples.value)
                     };
                 }));
             }
@@ -85,6 +85,7 @@ function analyseData(ldfURL) {
     return new Promise(function(resolve, reject){
         streamTriples(ldfURL, function(err, triple) {
             if (err) {
+                console.log("Error getting metadata for " + ldfURL);
                 reject(err);
                 return;
             }
@@ -100,11 +101,13 @@ function analyseData(ldfURL) {
 
                 //Sample uniformly distributed pages of the datasets so we (hopefully) get a representative distribution
                 // of the resources being used.
+                console.log("Getting " + pagesToSample + " pages from " + ldfURL);
                 for (var i = 0; i < pagesToSample; i++) {
                     var pageURL = ldfURL + "?page=" + (1 + i*pageInterval);
                     //console.log(pageURL);
                     streamTriples(pageURL, function(err, triple) {
                         if (err) {
+                            console.log("Error getting data page " + ldfURL);
                             reject(err);
                             return;
                         }
@@ -121,6 +124,7 @@ function analyseData(ldfURL) {
                             });
                         } else {
                             remainingPages = remainingPages - 1;
+                            console.log("Parsed result page from " + ldfURL + " (" + remainingPages + " remaining).");
                             if (remainingPages == 0) {
                                 resolve(urls);
                             }
@@ -132,6 +136,34 @@ function analyseData(ldfURL) {
     });
 }
 
+/**
+ * Extracts the most frequently occurring hostname from the host list.
+ * @param datasetInfo
+ * @returns {{mostOccurringHost: string, provenance: {ldf: string, url: string, numTriples: Number}, referencedHosts: *}}
+ */
+function process(datasetInfo) {
+    var mostOccurringHost = null;
+    var occurrences = 0;
+    
+    for (var key in datasetInfo.hostOccurrences) {
+        if (datasetInfo.hostOccurrences.hasOwnProperty(key)) {
+            if (datasetInfo.hostOccurrences[key] > occurrences) {
+                mostOccurringHost = key;
+                occurrences = datasetInfo.hostOccurrences[key];
+            }
+        }
+    }
+
+    delete datasetInfo.hostOccurrences[mostOccurringHost];
+
+    return {
+        mostOccurringHost: mostOccurringHost,
+        provenance: {ldf: datasetInfo.ldfEndpoint, url: datasetInfo.source, numTriples: datasetInfo.triples},
+        referencedHosts: datasetInfo.hostOccurrences
+    };
+}
+
+
 getRelevantDatasets().then(function(datasets){
     return Promise.all(datasets.map(function(dataset) {
         return analyseData(dataset.ldfEndpoint).then(function(analysis) {
@@ -139,9 +171,31 @@ getRelevantDatasets().then(function(datasets){
             return dataset;
         })
     }))
-}).then(function(analysis) {
-    console.log(analysis);
-    console.log("all done");
+}).then(function(datasetInfo) {
+    // Determine the most probable data provider (= the host name that occurred most in the dataset)
+    return datasetInfo.map(process);
+}).then(function(processedInfo) {
+    // Combine all information of the different datasets. Merges data if they share the data provider.
+    return processedInfo.reduce(function (acc, current) {
+        var entry = acc[current.mostOccurringHost];
+        if (!entry) {
+            acc[current.mostOccurringHost] = {
+                triples: current.provenance.numTriples,
+                provenance: [current.provenance],
+                referencedHosts: current.referencedHosts
+            };
+        } else {
+            entry.triples = entry.triples + current.provenance.numTriples;
+            entry.provenance.push(current.provenance);
+            entry.referencedHosts = Object.keys(current.referencedHosts).reduce(function (sum, key) {
+                sum[key] = (sum[key] || 0) + current.referencedHosts[key];
+                return sum;
+            }, entry.referencedHosts);
+        }
+        return acc;
+    }, {});
+}).then(function(data){
+    console.log(data);
 }).catch(function(err) {
     console.log("An error occurred: " + err);
 });
