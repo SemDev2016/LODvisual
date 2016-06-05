@@ -1,0 +1,16 @@
+{
+  "name": "lov-picture",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "n3": "^0.4.5",
+    "request": "^2.72.0",
+    "url-parse": "^1.1.1"
+  }
+}
